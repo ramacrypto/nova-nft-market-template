@@ -3,7 +3,7 @@ import { ethers } from 'ethers'
 import abiJSON from './marketplaceABI.json'
 
 // ======= CONFIG =======
-// Ganti dengan alamat kontrak hasil deploy di testnet (Remix/Base Sepolia)
+// Ganti dengan alamat kontrak hasil deploy
 const MARKETPLACE_ADDRESS = import.meta.env.VITE_MARKETPLACE_ADDRESS || "0xYourMarketplaceAddress"
 const RPC_URL = import.meta.env.VITE_RPC_URL || "https://sepolia.base.org"
 // =======================
@@ -48,7 +48,8 @@ function short(addr) {
   return addr.slice(0, 6) + '…' + addr.slice(-4)
 }
 
-const defaultListing = { nft: '', tokenId: '', priceEth: '' }
+// Form untuk ERC1155: nft address, tokenId, amount, price per unit (ETH)
+const defaultListing = { nft: '', tokenId: '', amount: '', priceEth: '' }
 
 export default function App() {
   const { signer, address, connect, roProvider } = useProviderSigner()
@@ -56,6 +57,7 @@ export default function App() {
   const [form, setForm] = useState(defaultListing)
   const [proceeds, setProceeds] = useState('0')
   const [loading, setLoading] = useState(false)
+  const [qtyInputs, setQtyInputs] = useState({}) // simpan qty per listingId
 
   const marketRO = useMemo(() => new ethers.Contract(MARKETPLACE_ADDRESS, abiJSON.abi, roProvider), [roProvider])
   const marketRW = useMemo(() => signer ? new ethers.Contract(MARKETPLACE_ADDRESS, abiJSON.abi, signer) : null, [signer])
@@ -64,6 +66,7 @@ export default function App() {
     try {
       setLoading(true)
       const data = await marketRO.getListings()
+      // Listing ERC1155: { id, seller, token, tokenId, amountLeft, pricePerUnit, active }
       setListings(data.filter(x => x.active))
       if (address) {
         const p = await marketRO.proceeds(address)
@@ -71,7 +74,7 @@ export default function App() {
       }
     } catch (e) {
       console.error(e)
-      alert('Gagal fetch listings, cek kontrak/RPC!')
+      alert('Gagal fetch listings, cek kontrak/RPC/ABI!')
     } finally {
       setLoading(false)
     }
@@ -79,30 +82,50 @@ export default function App() {
 
   useEffect(() => { refresh() }, [address])
 
-  async function listToken(e) {
+  // === LISTING ERC1155 ===
+  async function listToken1155(e) {
     e.preventDefault()
     if (!marketRW) return alert('Connect wallet dulu')
-    const { nft, tokenId, priceEth } = form
-    if (!nft || !tokenId || !priceEth) return alert('Lengkapi form')
+
+    const { nft, tokenId, amount, priceEth } = form
+    if (!nft || !tokenId || !amount || !priceEth) return alert('Lengkapi form')
 
     try {
-      const tx = await marketRW.listToken(nft, BigInt(tokenId), ethers.parseEther(priceEth))
+      const tx = await marketRW.list1155(
+        nft,
+        BigInt(tokenId),
+        BigInt(amount),
+        ethers.parseEther(priceEth) // harga per unit dalam ETH
+      )
       await tx.wait()
       setForm(defaultListing)
       refresh()
     } catch (err) {
       console.error(err)
-      alert('Gagal buat listing. Pastikan NFT di-approve ke marketplace.')
+      alert('Gagal buat listing. Pastikan NFT ERC1155 sudah setApprovalForAll ke marketplace.')
     }
   }
 
-  async function buy(listingId, priceWei) {
+  // === BELI ERC1155 (qty) ===
+  async function buyQty(listing) {
     if (!marketRW) return alert('Connect wallet dulu')
+    const id = listing.id
+    const qtyStr = qtyInputs[id] || '1'
+    const qty = BigInt(qtyStr)
+    if (qty <= 0n) return alert('Qty harus > 0')
+
     try {
-      const tx = await marketRW.buy(listingId, { value: priceWei })
+      // pricePerUnit & id dari kontrak biasanya bertipe bigint di ethers v6
+      const cost = listing.pricePerUnit * qty
+      const tx = await marketRW.buy(id, qty, { value: cost })
       await tx.wait()
+      // reset qty input utk listing tsb
+      setQtyInputs(prev => ({ ...prev, [id]: '' }))
       refresh()
-    } catch (err) { console.error(err) }
+    } catch (err) {
+      console.error(err)
+      alert('Gagal beli. Cek qty, saldo, atau approval.')
+    }
   }
 
   async function withdraw() {
@@ -117,7 +140,7 @@ export default function App() {
   return (
     <div className="container">
       <nav className="nav">
-        <div className="brand">NovaNFT <span className="badge">Template</span></div>
+        <div className="brand">NovaNFT <span className="badge">ERC1155</span></div>
         <div>
           {address ? (
             <button className="btn mono">{short(address)}</button>
@@ -128,16 +151,20 @@ export default function App() {
       </nav>
 
       <section className="hero">
-        <h2>Jual–Beli NFT</h2>
-        <form onSubmit={listToken}>
-          <label>Alamat NFT</label>
+        <h2>Jual–Beli NFT (ERC-1155)</h2>
+        <div className="pill" style={{marginBottom:12}}>Pastikan sudah setApprovalForAll ke marketplace</div>
+        <form onSubmit={listToken1155}>
+          <label>Alamat NFT (ERC1155)</label>
           <input value={form.nft} onChange={e=>setForm({...form,nft:e.target.value})} placeholder="0x..." />
           <label>Token ID</label>
-          <input value={form.tokenId} onChange={e=>setForm({...form,tokenId:e.target.value})} />
-          <label>Harga (ETH)</label>
-          <input value={form.priceEth} onChange={e=>setForm({...form,priceEth:e.target.value})} />
-          <button className="btn" type="submit">List Token</button>
+          <input value={form.tokenId} onChange={e=>setForm({...form,tokenId:e.target.value})} inputMode="numeric" />
+          <label>Amount (jumlah unit)</label>
+          <input value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})} inputMode="numeric" />
+          <label>Harga per unit (ETH)</label>
+          <input value={form.priceEth} onChange={e=>setForm({...form,priceEth:e.target.value})} inputMode="decimal" />
+          <button className="btn" type="submit">List 1155</button>
         </form>
+
         <div className="card" style={{marginTop:10}}>
           <h3>Saldo Penjualan</h3>
           <div>{proceeds} ETH</div>
@@ -150,15 +177,32 @@ export default function App() {
         <button className="btn" onClick={refresh}>{loading ? "Loading..." : "Refresh"}</button>
         <div className="grid">
           {listings.length === 0 && <div className="card">Belum ada listing.</div>}
-          {listings.map(l => (
-            <div key={Number(l.id)} className="card">
-              <div>Token: {l.nft}</div>
-              <div>ID: {String(l.tokenId)}</div>
-              <div>Harga: {ethers.formatEther(l.price)} ETH</div>
-              <button className="btn" onClick={()=>buy(l.id, l.price)}>Beli</button>
-              <div>Penjual: {short(l.seller)}</div>
-            </div>
-          ))}
+          {listings.map(l => {
+            const idNum = Number(l.id) // untuk key/label saja
+            const priceEth = ethers.formatEther(l.pricePerUnit)
+            const left = l.amountLeft?.toString?.() ?? String(l.amountLeft)
+            return (
+              <div key={idNum} className="card">
+                <div><strong>ID Listing:</strong> {idNum}</div>
+                <div><strong>Token (contract):</strong> {l.token}</div>
+                <div><strong>Token ID:</strong> {String(l.tokenId)}</div>
+                <div><strong>Price / unit:</strong> {priceEth} ETH</div>
+                <div><strong>Sisa:</strong> {left}</div>
+                <div style={{display:'flex', gap:8, marginTop:8}}>
+                  <input
+                    style={{flex:1}}
+                    type="number"
+                    min="1"
+                    placeholder="Qty"
+                    value={qtyInputs[l.id] || ''}
+                    onChange={(e)=>setQtyInputs(prev=>({ ...prev, [l.id]: e.target.value }))}
+                  />
+                  <button className="btn" onClick={()=>buyQty(l)}>Beli</button>
+                </div>
+                <div style={{marginTop:8, color:'#9ca3af'}}>Penjual: {short(l.seller)}</div>
+              </div>
+            )
+          })}
         </div>
       </section>
     </div>
