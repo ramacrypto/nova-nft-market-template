@@ -30,13 +30,46 @@ function useProviderSigner() {
   }, [])
 
   const connect = async () => {
-    if (!window.ethereum) return alert('Install MetaMask')
-    await window.ethereum.request({ method: 'eth_requestAccounts' })
-    const p = new ethers.BrowserProvider(window.ethereum)
-    const s = await p.getSigner()
-    setProvider(p); setSigner(s)
-    setAddress(await s.getAddress())
+  if (!window.ethereum) return alert('Install MetaMask')
+
+  // Minta user connect account
+  await window.ethereum.request({ method: 'eth_requestAccounts' })
+
+  // Cek jaringan
+  const chainIdHex = await window.ethereum.request({ method: 'eth_chainId' })
+  const MONAD_CHAIN_ID = '0x4ebf' // contoh: 20143 desimal = 0x4ebf hex (ganti sesuai chainId Monad testnet)
+
+  if (chainIdHex !== MONAD_CHAIN_ID) {
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: MONAD_CHAIN_ID }],
+      })
+    } catch (switchError) {
+      // Kalau jaringan belum ada di wallet → tambah
+      if (switchError.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: MONAD_CHAIN_ID,
+            chainName: 'Monad Testnet',
+            rpcUrls: ['https://rpc-mu.di-monad.org'],
+            nativeCurrency: {
+              name: 'MON',
+              symbol: 'MON',
+              decimals: 18
+            }
+          }]
+        })
+      }
+    }
   }
+
+  const p = new ethers.BrowserProvider(window.ethereum)
+  const s = await p.getSigner()
+  setProvider(p); setSigner(s)
+  setAddress(await s.getAddress())
+}
 
   const roProvider = useMemo(() => new ethers.JsonRpcProvider(RPC_URL), [])
 
